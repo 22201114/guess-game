@@ -24,6 +24,7 @@
  .room-code{font-size:24px;font-weight:bold;color:#4a6cf7;text-align:center;letter-spacing:5px;padding:15px;background:#f0f4ff;border-radius:10px;margin:15px 0;}
  .loading{animation:pulse 1.5s infinite;}
  @keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.5;}}
+ h3{text-align:center;color:#333;margin-bottom:20px;}
 </style>
 </head>
 <body>
@@ -44,6 +45,7 @@
  <input type="password" id="mySecret" placeholder="4 位数字（可重复，如 1122）" maxlength="4">
  <button onclick="setSecret()">确认</button>
  <p class="info">💡 对方猜中你就输了</p>
+ <div id="waitingMsg" class="msg wait hide">等待对方设置数字...</div>
 </div>
 
 <div class="box hide" id="page3">
@@ -70,6 +72,7 @@ let myTurn = false;
 let gameStarted = false;
 let gameOver = false;
 let opponentName = "";
+let opponentReady = false;
 
 // 创建房间
 function createRoom() {
@@ -94,12 +97,6 @@ function createRoom() {
   console.log("房间创建成功，ID:", id);
   statusDiv.className = "msg connected";
   statusDiv.innerText = "✅ 房间创建成功！房间号：" + roomId;
-  
-  // 等待 2 秒后进入设置页面
-  setTimeout(() => {
-   statusDiv.classList.add("hide");
-   show(2);
-  }, 1500);
  });
  
  peer.on('connection', function(c) {
@@ -115,10 +112,8 @@ function createRoom() {
   statusDiv.innerText = "✅ " + opponentName + " 已加入！";
   
   setTimeout(() => {
-   if (mySecret) {
-    show(3);
-    updateStatus();
-   }
+   statusDiv.classList.add("hide");
+   show(2);
   }, 1000);
  });
  
@@ -161,7 +156,6 @@ function joinRoom() {
   console.log("已连接到 PeerJS 服务器，ID:", id);
   console.log("尝试连接房间:", roomId);
   
-  // 等待一下再连接，确保房主已经准备好
   setTimeout(() => {
    try {
     conn = peer.connect(roomId, {
@@ -173,7 +167,7 @@ function joinRoom() {
     statusDiv.className = "msg error";
     statusDiv.innerText = "❌ 无法连接到房间，请检查房间号";
    }
-  }, 1000);
+  }, 500);
  });
  
  peer.on('error', function(err) {
@@ -195,7 +189,6 @@ function setupConnection() {
   console.log("连接已建立");
   
   if (!isHost) {
-   // 加入者发送加入消息
    conn.send({ type: 'join', nickname: nickname });
    console.log("发送加入消息");
   }
@@ -227,17 +220,16 @@ function handleData(data) {
     statusDiv.className = "msg connected";
     statusDiv.innerText = "✅ " + opponentName + " 已加入！";
     setTimeout(() => {
-     if (mySecret) {
-      show(3);
-      updateStatus();
-     }
+     statusDiv.classList.add("hide");
+     show(2);
     }, 1000);
    }
    break;
    
   case 'secret':
    opponentSecret = data.secret;
-   console.log("对方已设置数字");
+   opponentReady = true;
+   console.log("对方已设置数字，我方:", mySecret ? "已设置" : "未设置");
    checkStart();
    break;
    
@@ -264,10 +256,6 @@ function handleData(data) {
    document.getElementById("winText").className = "win";
    document.getElementById("winText").innerText = `🎉 ${data.winner} 赢了！`;
    document.getElementById("status").innerText = "游戏结束！";
-   break;
-   
-  case 'log':
-   addLog(data.message);
    break;
  }
 }
@@ -302,12 +290,21 @@ function setSecret() {
  mySecret = document.getElementById("mySecret").value.trim();
  if (mySecret.length !== 4 || isNaN(mySecret)) return alert("必须是 4 位数字");
  
+ const btn = event.target;
+ btn.disabled = true;
+ btn.innerText = "发送中...";
+ 
  conn.send({ type: 'secret', secret: mySecret });
  console.log("已发送秘密数字");
  
  if (isHost) {
+  // 房主设置后，等待对方
+  const waitingMsg = document.getElementById("waitingMsg");
+  waitingMsg.classList.remove("hide");
   checkStart();
  } else {
+  // 加入者设置后，显示等待消息
+  show(3);
   document.getElementById("status").className = "msg wait";
   document.getElementById("status").innerText = "等待对方设置数字...";
  }
