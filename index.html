@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>联机猜数字 - 远程版</title>
+<script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+<style>
+ body{background:#f0f7ff;font-family:Arial,sans-serif;padding:20px;}
+ .box{background:white;border-radius:16px;padding:22px;max-width:450px;margin:20px auto;box-shadow:0 4px 12px #00000010;}
+ input,button{width:100%;padding:12px;margin:8px 0;border-radius:10px;border:1px solid #ddd;font-size:16px;}
+ button{background:#4a6cf7;color:white;border:none;cursor:pointer;}
+ button:disabled{background:#ccc;cursor:not-allowed;}
+ .hide{display:none;}
+ .msg{padding:10px;border-radius:10px;text-align:center;margin:10px 0;}
+ .wait{background:#fff4e6;}
+ .turn{background:#e6fffc;}
+ .connected{background:#e6ffe6;}
+ .error{background:#ffe6e6;color:#c00;}
+ .log{max-height:260px;overflow-y:auto;margin-top:10px;line-height:1.4;background:#f8f9fa;border-radius:8px;padding:10px;}
+ .item{padding:6px 0;border-bottom:1px solid #eee;}
+ .win{color:red;font-weight:bold;text-align:center;margin-top:10px;font-size:17px;}
+ .info{font-size:12px;color:#666;text-align:center;margin-top:10px;}
+ .room-code{font-size:24px;font-weight:bold;color:#4a6cf7;text-align:center;letter-spacing:5px;padding:15px;background:#f0f4ff;border-radius:10px;margin:15px 0;}
+ .loading{animation:pulse 1.5s infinite;}
+ @keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.5;}}
+</style>
+</head>
+<body>
+
+<div class="box" id="page1">
+ <h3>🎮 联机猜数字 - 远程版</h3>
+ <button onclick="createRoom()" style="background:#10b981;">🏠 创建房间</button>
+ <p style="text-align:center;margin:15px 0;">— 或者 —</p>
+ <input id="joinRoomId" placeholder="输入朋友的房间号" maxlength="6" type="text" style="text-transform:uppercase;">
+ <input id="nickname" placeholder="你的名字">
+ <button onclick="joinRoom()">🚪 加入房间</button>
+ <p class="info">💡 创建房间后，把房间号发给朋友，让他加入</p>
+ <div id="createStatus" class="msg hide"></div>
+</div>
+
+<div class="box hide" id="page2">
+ <h3>🔢 设置你的 4 位数字</h3>
+ <input type="password" id="mySecret" placeholder="4 位数字（可重复，如 1122）" maxlength="4">
+ <button onclick="setSecret()">确认</button>
+ <p class="info">💡 对方猜中你就输了</p>
+</div>
+
+<div class="box hide" id="page3">
+ <h3>🎯 猜数字</h3>
+ <div id="roomDisplay" class="room-code"></div>
+ <div id="status" class="msg wait">连接中...</div>
+ <input id="guessInput" placeholder="输入 4 位数字" maxlength="4" type="number">
+ <button onclick="playGuess()">猜！</button>
+ <div class="log" id="history"></div>
+ <div id="winText"></div>
+ <p class="info">💡 提示：会告诉你猜对了几个数字</p>
+</div>
+
+<script>
+let peer = null;
+let conn = null;
+let myId = null;
+let roomId = null;
+let nickname = "";
+let mySecret = "";
+let opponentSecret = "";
+let isHost = false;
+let myTurn = false;
+let gameStarted = false;
+let gameOver = false;
+let opponentName = "";
+
+// 创建房间
+function createRoom() {
+ roomId = generateRoomId();
+ nickname = document.getElementById("nickname").value.trim() || "玩家 1";
+ 
+ const statusDiv = document.getElementById("createStatus");
+ statusDiv.className = "msg wait loading";
+ statusDiv.innerText = "正在创建房间...";
+ statusDiv.classList.remove("hide");
+ 
+ peer = new Peer(roomId, {
+  host: '0.peerjs.com',
+  port: 443,
+  secure: true,
+  debug: 2
+ });
+ 
+ peer.on('open', function(id) {
+  myId = id;
+  isHost = true;
+  console.log("房间创建成功，ID:", id);
+  statusDiv.className = "msg connected";
+  statusDiv.innerText = "✅ 房间创建成功！房间号：" + roomId;
+  
+  // 等待 2 秒后进入设置页面
+  setTimeout(() => {
+   statusDiv.classList.add("hide");
+   show(2);
+  }, 1500);
+ });
+ 
+ peer.on('connection', function(c) {
+  console.log("有人加入！");
+  if (conn && conn.open) {
+   c.close();
+   return;
+  }
+  conn = c;
+  setupConnection();
+  
+  statusDiv.className = "msg connected";
+  statusDiv.innerText = "✅ " + opponentName + " 已加入！";
+  
+  setTimeout(() => {
+   if (mySecret) {
+    show(3);
+    updateStatus();
+   }
+  }, 1000);
+ });
+ 
+ peer.on('error', function(err) {
+  console.error("Peer error:", err);
+  statusDiv.className = "msg error";
+  if (err.type === 'unavailable-id') {
+   statusDiv.innerText = "❌ 房间号已被占用，请重试";
+  } else if (err.type === 'network') {
+   statusDiv.innerText = "❌ 网络错误，请检查网络连接";
+  } else {
+   statusDiv.innerText = "❌ 错误：" + err.type;
+  }
+ });
+}
+
+// 加入房间
+function joinRoom() {
+ roomId = document.getElementById("joinRoomId").value.trim().toUpperCase();
+ nickname = document.getElementById("nickname").value.trim();
+ 
+ if (!roomId) return alert("请输入房间号");
+ if (!nickname) return alert("请输入名字");
+ 
+ const statusDiv = document.getElementById("createStatus");
+ statusDiv.className = "msg wait loading";
+ statusDiv.innerText = "正在加入房间...";
+ statusDiv.classList.remove("hide");
+ 
+ peer = new Peer(null, {
+  host: '0.peerjs.com',
+  port: 443,
+  secure: true,
+  debug: 2
+ });
+ 
+ peer.on('open', function(id) {
+  myId = id;
+  isHost = false;
+  console.log("已连接到 PeerJS 服务器，ID:", id);
+  console.log("尝试连接房间:", roomId);
+  
+  // 等待一下再连接，确保房主已经准备好
+  setTimeout(() => {
+   try {
+    conn = peer.connect(roomId, {
+     metadata: { nickname: nickname }
+    });
+    setupConnection();
+   } catch(e) {
+    console.error("连接失败:", e);
+    statusDiv.className = "msg error";
+    statusDiv.innerText = "❌ 无法连接到房间，请检查房间号";
+   }
+  }, 1000);
+ });
+ 
+ peer.on('error', function(err) {
+  console.error("Peer error:", err);
+  statusDiv.className = "msg error";
+  if (err.type === 'peer-unavailable') {
+   statusDiv.innerText = "❌ 房间不存在或房主已离线";
+  } else if (err.type === 'network') {
+   statusDiv.innerText = "❌ 网络错误，请检查网络连接";
+  } else {
+   statusDiv.innerText = "❌ 错误：" + err.type;
+  }
+ });
+}
+
+// 设置连接
+function setupConnection() {
+ conn.on('open', function() {
+  console.log("连接已建立");
+  
+  if (!isHost) {
+   // 加入者发送加入消息
+   conn.send({ type: 'join', nickname: nickname });
+   console.log("发送加入消息");
+  }
+ });
+ 
+ conn.on('data', function(data) {
+  console.log("收到数据:", data);
+  handleData(data);
+ });
+ 
+ conn.on('close', function() {
+  alert("对方已断开连接");
+  location.reload();
+ });
+ 
+ conn.on('error', function(err) {
+  console.error("连接错误:", err);
+  alert("连接错误：" + err);
+ });
+}
+
+// 处理接收的数据
+function handleData(data) {
+ switch(data.type) {
+  case 'join':
+   opponentName = data.nickname || "玩家 2";
+   if (isHost) {
+    const statusDiv = document.getElementById("createStatus");
+    statusDiv.className = "msg connected";
+    statusDiv.innerText = "✅ " + opponentName + " 已加入！";
+    setTimeout(() => {
+     if (mySecret) {
+      show(3);
+      updateStatus();
+     }
+    }, 1000);
+   }
+   break;
+   
+  case 'secret':
+   opponentSecret = data.secret;
+   console.log("对方已设置数字");
+   checkStart();
+   break;
+   
+  case 'guess':
+   const result = countSame(mySecret, data.guess);
+   const win = data.guess === mySecret;
+   
+   addLog(`${data.player} 猜 ${data.guess} → 对${result}个`);
+   
+   if (win) {
+    gameOver = true;
+    document.getElementById("winText").className = "win";
+    document.getElementById("winText").innerText = `🎉 ${data.player} 赢了！`;
+    document.getElementById("status").innerText = "游戏结束！";
+    conn.send({ type: 'gameOver', winner: data.player });
+   } else {
+    myTurn = true;
+    updateStatus();
+   }
+   break;
+   
+  case 'gameOver':
+   gameOver = true;
+   document.getElementById("winText").className = "win";
+   document.getElementById("winText").innerText = `🎉 ${data.winner} 赢了！`;
+   document.getElementById("status").innerText = "游戏结束！";
+   break;
+   
+  case 'log':
+   addLog(data.message);
+   break;
+ }
+}
+
+// 检查是否可以开始游戏
+function checkStart() {
+ if (mySecret && opponentSecret && !gameStarted) {
+  gameStarted = true;
+  console.log("游戏开始！房主先手");
+  show(3);
+  if (isHost) {
+   myTurn = true;
+  } else {
+   myTurn = false;
+  }
+  updateStatus();
+ }
+}
+
+// 生成房间号
+function generateRoomId() {
+ const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+ let result = 'G';
+ for (let i = 0; i < 5; i++) {
+  result += chars.charAt(Math.floor(Math.random() * chars.length));
+ }
+ return result;
+}
+
+// 设置秘密数字
+function setSecret() {
+ mySecret = document.getElementById("mySecret").value.trim();
+ if (mySecret.length !== 4 || isNaN(mySecret)) return alert("必须是 4 位数字");
+ 
+ conn.send({ type: 'secret', secret: mySecret });
+ console.log("已发送秘密数字");
+ 
+ if (isHost) {
+  checkStart();
+ } else {
+  document.getElementById("status").className = "msg wait";
+  document.getElementById("status").innerText = "等待对方设置数字...";
+ }
+}
+
+// 猜数字
+function playGuess() {
+ const guess = document.getElementById("guessInput").value.trim();
+ if (guess.length !== 4 || isNaN(guess)) return alert("请输入 4 位数字");
+ if (!myTurn || gameOver) return;
+ if (!conn || !conn.open) return alert("连接已断开");
+ 
+ myTurn = false;
+ conn.send({ 
+  type: 'guess', 
+  guess: guess, 
+  player: nickname 
+ });
+ 
+ document.getElementById("guessInput").value = "";
+}
+
+// 计算猜对几个
+function countSame(ans, guess) {
+ let S = ans.split(''), count = 0;
+ for (let ch of guess.split('')) {
+  let i = S.indexOf(ch);
+  if (i >= 0) { count++; S.splice(i, 1); }
+ }
+ return count;
+}
+
+// 更新状态显示
+function updateStatus() {
+ const st = document.getElementById("status");
+ document.getElementById("roomDisplay").innerText = roomId;
+ 
+ if (gameOver) {
+  st.className = "msg wait";
+  st.innerText = "游戏结束！";
+ } else if (myTurn) {
+  st.className = "msg turn";
+  st.innerText = "轮到你猜！";
+ } else {
+  st.className = "msg wait";
+  st.innerText = "等待对方猜...";
+ }
+ document.getElementById("guessInput").disabled = !myTurn || gameOver;
+}
+
+// 添加历史记录
+function addLog(message) {
+ const h = document.getElementById("history");
+ h.innerHTML += `<div class="item">${message}</div>`;
+ h.scrollTop = h.scrollHeight;
+}
+
+// 切换页面
+function show(n) {
+ document.getElementById("page1").classList.add("hide");
+ document.getElementById("page2").classList.add("hide");
+ document.getElementById("page3").classList.add("hide");
+ if (n === 2) document.getElementById("page2").classList.remove("hide");
+ if (n === 3) document.getElementById("page3").classList.remove("hide");
+}
+</script>
+</body>
+</html>
